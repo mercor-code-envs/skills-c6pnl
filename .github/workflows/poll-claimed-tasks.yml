@@ -9,13 +9,13 @@ jobs:
   poll:
     runs-on: ubuntu-latest
     steps:
-      - name: Find and dispatch setup for newly claimed tasks
+      - name: Find newly claimed tasks and trigger fork setup
         env:
           AT_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           python3 << 'EOF'
-          import json, re, subprocess, os, urllib.request, urllib.parse
+          import json, os, urllib.request, urllib.parse
 
           AT_TOKEN = os.environ["AT_TOKEN"]
           GH_TOKEN = os.environ["GH_TOKEN"]
@@ -25,7 +25,7 @@ jobs:
 
           # Tasks claimed but not yet set up (time_in_progress empty)
           formula = "AND({task_status}='Claimed',{time_in_progress}='')"
-          fields = ["s3_presigned_url","branch_name","repo","expert__id","expert","airtable_task_id"]
+          fields = ["repo","expert__id","expert","github_id"]
           url = (f"https://api.airtable.com/v0/{BASE}/{TABLE}"
                  f"?filterByFormula={urllib.parse.quote(formula)}")
           for f in fields:
@@ -41,25 +41,18 @@ jobs:
           for r in records:
               f = r["fields"]
               record_id = r["id"]
-              s3_url = f.get("s3_presigned_url", "")
-              branch = f.get("branch_name", "")
 
-              # Derive slug from S3 URL (e.g. .../tasks/asyncio-pipeline-repair.zip?...)
-              slug_match = re.search(r"/tasks/([^.]+)\.zip", s3_url)
-              slug = slug_match.group(1) if slug_match else ""
-
-              # repo formula result (list or string)
+              # repo formula result
               repo_val = f.get("repo", "")
               fork_repo = (repo_val[0] if isinstance(repo_val, list) else str(repo_val)).strip()
 
-              # expert_id lookup
+              # If repo is blank (expert not yet onboarded), derive from expert_id
               expert_ids = f.get("expert__id", [])
               expert_id = (expert_ids[0] if expert_ids else "").strip().lower()
 
-              # If repo is blank (expert not yet onboarded), derive fork from expert_id
               if not fork_repo and expert_id:
                   fork_repo = f"skills-{expert_id}"
-                  # Also set Expert.repo so future lookups work
+                  # Set Expert.repo so future lookups auto-resolve
                   expert_links = f.get("expert", [])
                   if expert_links:
                       patch = json.dumps({"fields": {"repo": fork_repo}}).encode()
@@ -75,20 +68,22 @@ jobs:
                       except Exception as e:
                           print(f"  WARN: Could not set Expert.repo: {e}")
 
-              if not slug or not fork_repo or not s3_url:
-                  print(f"SKIP {record_id}: slug={slug!r} fork={fork_repo!r} s3={bool(s3_url)}")
+              # expert GitHub username
+              expert_github = f.get("github_id", "")
+              if isinstance(expert_github, list):
+                  expert_github = expert_github[0] if expert_github else ""
+
+              if not fork_repo:
+                  print(f"SKIP {record_id}: no fork_repo resolved")
                   continue
 
-              print(f"Dispatching: {slug} -> {fork_repo}/{branch}")
+              print(f"Dispatching setup: fork={fork_repo} expert={expert_github}")
 
               payload = json.dumps({
                   "ref": "main",
                   "inputs": {
-                      "task_slug": slug,
                       "fork_repo": fork_repo,
-                      "branch_name": branch,
-                      "expert_github": "",
-                      "s3_url": s3_url,
+                      "expert_github": expert_github,
                       "airtable_record_id": record_id,
                   }
               }).encode()
