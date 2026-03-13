@@ -5,20 +5,11 @@ on:
     types: [expert-claimed-task]
   workflow_dispatch:
     inputs:
-      task_slug:
-        description: 'Task slug (e.g. android-constraint-fix)'
-        required: true
       fork_repo:
         description: 'Expert fork repo name (e.g. skills-iml8c)'
         required: true
-      branch_name:
-        description: 'Branch name (e.g. skills-recXXXXX)'
-        required: true
       expert_github:
         description: 'Expert GitHub username'
-        required: true
-      s3_url:
-        description: 'Presigned S3 URL for task zip'
         required: true
       airtable_record_id:
         description: 'Airtable task record ID'
@@ -32,22 +23,16 @@ jobs:
         id: inputs
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "task_slug=${{ github.event.client_payload.task_slug }}" >> $GITHUB_OUTPUT
             echo "fork_repo=${{ github.event.client_payload.fork_repo }}" >> $GITHUB_OUTPUT
-            echo "branch_name=${{ github.event.client_payload.branch_name }}" >> $GITHUB_OUTPUT
             echo "expert_github=${{ github.event.client_payload.expert_github }}" >> $GITHUB_OUTPUT
-            echo "s3_url=${{ github.event.client_payload.s3_url }}" >> $GITHUB_OUTPUT
             echo "airtable_record_id=${{ github.event.client_payload.airtable_record_id }}" >> $GITHUB_OUTPUT
           else
-            echo "task_slug=${{ inputs.task_slug }}" >> $GITHUB_OUTPUT
             echo "fork_repo=${{ inputs.fork_repo }}" >> $GITHUB_OUTPUT
-            echo "branch_name=${{ inputs.branch_name }}" >> $GITHUB_OUTPUT
             echo "expert_github=${{ inputs.expert_github }}" >> $GITHUB_OUTPUT
-            echo "s3_url=${{ inputs.s3_url }}" >> $GITHUB_OUTPUT
             echo "airtable_record_id=${{ inputs.airtable_record_id }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create expert fork repo from template (if not exists)
+      - name: Fork skills-template for expert (if not exists)
         env:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
@@ -55,70 +40,22 @@ jobs:
           if gh api repos/mercor-code-envs/$FORK_REPO 2>/dev/null | grep -q '"id"'; then
             echo "Repo mercor-code-envs/$FORK_REPO already exists"
           else
-            echo "Creating repo mercor-code-envs/$FORK_REPO from skills-template..."
-            gh api repos/mercor-code-envs/skills-template/generate \
+            echo "Forking skills-template -> mercor-code-envs/$FORK_REPO..."
+            gh api repos/mercor-code-envs/skills-template/forks \
               --method POST \
-              --field owner=mercor-code-envs \
-              --field name=$FORK_REPO \
-              --field description="GDM Skills — expert fork" \
-              --field private=false \
-              --field include_all_branches=false
-            echo "Waiting for repo to be ready..."
-            sleep 8
+              --field organization=mercor-code-envs \
+              --field name=$FORK_REPO
+            echo "Waiting for fork to be ready..."
+            sleep 10
           fi
 
-      - name: Create task branch with task files
-        env:
-          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
-        run: |
-          FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
-          TASK_SLUG="${{ steps.inputs.outputs.task_slug }}"
-          BRANCH="${{ steps.inputs.outputs.branch_name }}"
-          S3_URL="${{ steps.inputs.outputs.s3_url }}"
-
-          git clone https://x-access-token:$GH_TOKEN@github.com/mercor-code-envs/$FORK_REPO.git task-repo
-          cd task-repo
-
-          git checkout -b $BRANCH
-
-          python3 -c "
-          import urllib.request, io, zipfile, sys
-          from pathlib import Path
-          url = sys.argv[1]
-          slug = sys.argv[2]
-          print('Downloading...')
-          with urllib.request.urlopen(url) as r:
-              data = r.read()
-          print(f'Downloaded {len(data)//1024} KB')
-          dest = Path('tasks') / slug
-          dest.mkdir(parents=True, exist_ok=True)
-          with zipfile.ZipFile(io.BytesIO(data)) as zf:
-              for m in zf.namelist():
-                  prefix = slug + '/'
-                  if m.startswith(prefix):
-                      rel = m[len(prefix):]
-                      if not rel: continue
-                      t = dest / rel
-                      t.parent.mkdir(parents=True, exist_ok=True)
-                      if not m.endswith('/'):
-                          t.write_bytes(zf.read(m))
-          print(f'Extracted to tasks/{slug}/')
-          " "$S3_URL" "$TASK_SLUG"
-
-          git config user.email "ops@mercor.com"
-          git config user.name "Mercor Ops"
-          git add tasks/
-          git commit -m "Add task: $TASK_SLUG"
-          git push origin $BRANCH
-          echo "Branch $BRANCH pushed with task at tasks/$TASK_SLUG/"
-
-      - name: Add expert as collaborator on fork repo
+      - name: Add expert as collaborator
         env:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
           EXPERT="${{ steps.inputs.outputs.expert_github }}"
-          if [ -n "$EXPERT" ] && [ "$EXPERT" != "null" ]; then
+          if [ -n "$EXPERT" ] && [ "$EXPERT" != "null" ] && [ "$EXPERT" != "" ]; then
             gh api repos/mercor-code-envs/$FORK_REPO/collaborators/$EXPERT \
               --method PUT \
               --field permission=write
