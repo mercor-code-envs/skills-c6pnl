@@ -8,6 +8,9 @@ on:
       task_slug:
         description: 'Task slug (e.g. android-constraint-fix)'
         required: true
+      fork_repo:
+        description: 'Expert fork repo name (e.g. skills-iml8c)'
+        required: true
       branch_name:
         description: 'Branch name (e.g. skills-recXXXXX)'
         required: true
@@ -30,56 +33,58 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "task_slug=${{ github.event.client_payload.task_slug }}" >> $GITHUB_OUTPUT
+            echo "fork_repo=${{ github.event.client_payload.fork_repo }}" >> $GITHUB_OUTPUT
             echo "branch_name=${{ github.event.client_payload.branch_name }}" >> $GITHUB_OUTPUT
             echo "expert_github=${{ github.event.client_payload.expert_github }}" >> $GITHUB_OUTPUT
             echo "s3_url=${{ github.event.client_payload.s3_url }}" >> $GITHUB_OUTPUT
             echo "airtable_record_id=${{ github.event.client_payload.airtable_record_id }}" >> $GITHUB_OUTPUT
           else
             echo "task_slug=${{ inputs.task_slug }}" >> $GITHUB_OUTPUT
+            echo "fork_repo=${{ inputs.fork_repo }}" >> $GITHUB_OUTPUT
             echo "branch_name=${{ inputs.branch_name }}" >> $GITHUB_OUTPUT
             echo "expert_github=${{ inputs.expert_github }}" >> $GITHUB_OUTPUT
             echo "s3_url=${{ inputs.s3_url }}" >> $GITHUB_OUTPUT
             echo "airtable_record_id=${{ inputs.airtable_record_id }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create task repo from template (if not exists)
+      - name: Create expert fork repo from template (if not exists)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TASK_SLUG="${{ steps.inputs.outputs.task_slug }}"
+          FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
           # Check if repo already exists
-          if gh api repos/mercor-code-envs/$TASK_SLUG 2>/dev/null | grep -q '"id"'; then
-            echo "Repo mercor-code-envs/$TASK_SLUG already exists"
+          if gh api repos/mercor-code-envs/$FORK_REPO 2>/dev/null | grep -q '"id"'; then
+            echo "Repo mercor-code-envs/$FORK_REPO already exists"
           else
-            echo "Creating repo mercor-code-envs/$TASK_SLUG from template..."
+            echo "Creating repo mercor-code-envs/$FORK_REPO from skills-template..."
             gh api repos/mercor-code-envs/skills-template/generate \
               --method POST \
               --field owner=mercor-code-envs \
-              --field name=$TASK_SLUG \
-              --field description="GDM Skills task: $TASK_SLUG" \
+              --field name=$FORK_REPO \
+              --field description="GDM Skills — expert fork" \
               --field private=false \
               --field include_all_branches=false
             echo "Waiting for repo to be ready..."
-            sleep 5
+            sleep 8
           fi
 
-      - name: Download task zip and create branch with task files
+      - name: Create task branch with task files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
           TASK_SLUG="${{ steps.inputs.outputs.task_slug }}"
           BRANCH="${{ steps.inputs.outputs.branch_name }}"
           S3_URL="${{ steps.inputs.outputs.s3_url }}"
 
-          # Clone the new task repo
-          git clone https://x-access-token:$GH_TOKEN@github.com/mercor-code-envs/$TASK_SLUG.git task-repo
+          # Clone the expert fork repo
+          git clone https://x-access-token:$GH_TOKEN@github.com/mercor-code-envs/$FORK_REPO.git task-repo
           cd task-repo
 
           # Create and switch to the task branch
           git checkout -b $BRANCH
 
-          # Download and extract the task zip into tasks/
-          mkdir -p tasks
+          # Download and extract the task zip into tasks/{task-slug}/
           python3 -c "
           import urllib.request, io, zipfile, sys
           from pathlib import Path
@@ -110,19 +115,19 @@ jobs:
           git add tasks/
           git commit -m "Add task: $TASK_SLUG"
           git push origin $BRANCH
-          echo "Branch $BRANCH pushed with task files."
+          echo "Branch $BRANCH pushed with task at tasks/$TASK_SLUG/"
 
-      - name: Add expert as collaborator
+      - name: Add expert as collaborator on fork repo
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TASK_SLUG="${{ steps.inputs.outputs.task_slug }}"
+          FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
           EXPERT="${{ steps.inputs.outputs.expert_github }}"
-          if [ -n "$EXPERT" ] && [ "$EXPERT" \!= "null" ]; then
-            gh api repos/mercor-code-envs/$TASK_SLUG/collaborators/$EXPERT \
+          if [ -n "$EXPERT" ] && [ "$EXPERT" != "null" ]; then
+            gh api repos/mercor-code-envs/$FORK_REPO/collaborators/$EXPERT \
               --method PUT \
               --field permission=write
-            echo "Added $EXPERT as collaborator on mercor-code-envs/$TASK_SLUG"
+            echo "Added $EXPERT as collaborator on mercor-code-envs/$FORK_REPO"
           fi
 
       - name: Update Airtable task status to In Progress
@@ -130,8 +135,6 @@ jobs:
           AT_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
         run: |
           RECORD_ID="${{ steps.inputs.outputs.airtable_record_id }}"
-          TASK_SLUG="${{ steps.inputs.outputs.task_slug }}"
-          BRANCH="${{ steps.inputs.outputs.branch_name }}"
           if [ -n "$AT_TOKEN" ] && [ -n "$RECORD_ID" ]; then
             curl -s -X PATCH \
               "https://api.airtable.com/v0/appVMECzrlP3j1BFm/tblkLmyEvZfWY5J31/$RECORD_ID" \
