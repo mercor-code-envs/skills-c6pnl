@@ -9,13 +9,13 @@ jobs:
   poll:
     runs-on: ubuntu-latest
     steps:
-      - name: Find newly claimed tasks and trigger fork setup
+      - name: Find claimed tasks, fork repo, add collaborator, update Airtable
         env:
           AT_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           python3 << 'EOF'
-          import json, os, urllib.request, urllib.parse
+          import json, os, time, urllib.request, urllib.parse, subprocess
 
           AT_TOKEN = os.environ["AT_TOKEN"]
           GH_TOKEN = os.environ["GH_TOKEN"]
@@ -23,11 +23,8 @@ jobs:
           TABLE = "tblkLmyEvZfWY5J31"
           EXPERT_TABLE = "tblNvesyHUH1E1sJZ"
 
-          def at_get(path):
-              req = urllib.request.Request(
-                  f"https://api.airtable.com/v0/{BASE}/{path}",
-                  headers={"Authorization": f"Bearer {AT_TOKEN}"}
-              )
+          def at_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": f"Bearer {AT_TOKEN}"})
               with urllib.request.urlopen(req) as r:
                   return json.loads(r.read())
 
@@ -42,10 +39,17 @@ jobs:
               with urllib.request.urlopen(req) as r:
                   return json.loads(r.read())
 
-          # Tasks claimed but not yet set up (time_in_progress empty)
-          formula = urllib.parse.quote("AND({task_status}='Claimed',{time_in_progress}='')")
-          data = at_get(f"{TABLE}?filterByFormula={formula}&fields[]=repo&fields[]=expert__id&fields[]=expert")
+          def gh(args):
+              result = subprocess.run(
+                  ["gh"] + args,
+                  env={**os.environ, "GH_TOKEN": GH_TOKEN},
+                  capture_output=True, text=True
+              )
+              return result.returncode, result.stdout, result.stderr
 
+          # Fetch claimed tasks not yet set up
+          formula = urllib.parse.quote("AND({task_status}='Claimed',{time_in_progress}='')")
+          data = at_get(f"https://api.airtable.com/v0/{BASE}/{TABLE}?filterByFormula={formula}&fields[]=repo&fields[]=expert__id&fields[]=expert")
           records = data.get("records", [])
           print(f"Found {len(records)} claimed tasks awaiting setup")
 
@@ -53,7 +57,6 @@ jobs:
               f = r["fields"]
               record_id = r["id"]
 
-              # Resolve fork repo from formula field
               repo_val = f.get("repo", "")
               fork_repo = (repo_val[0] if isinstance(repo_val, list) else str(repo_val)).strip()
 
@@ -62,7 +65,7 @@ jobs:
               expert_links = f.get("expert", [])
               expert_record_id = expert_links[0] if expert_links else ""
 
-              # If fork_repo blank, derive from expert_id and backfill Expert.repo
+              # Derive fork_repo from expert_id if not yet set
               if not fork_repo and expert_id:
                   fork_repo = f"skills-{expert_id}"
                   if expert_record_id:
@@ -73,43 +76,53 @@ jobs:
                           print(f"  WARN: Could not set Expert.repo: {e}")
 
               if not fork_repo:
-                  print(f"SKIP {record_id}: no fork_repo resolved")
+                  print(f"SKIP {record_id}: cannot resolve fork_repo")
                   continue
 
-              # Fetch expert GitHub username from Expert record
+              # Fetch expert GitHub username
               expert_github = ""
               if expert_record_id:
                   try:
-                      exp = at_get(f"{EXPERT_TABLE}/{expert_record_id}?fields[]=github_id")
-                      expert_github = exp.get("fields", {}).get("github_id", "")
+                      exp = at_get(f"https://api.airtable.com/v0/{BASE}/{EXPERT_TABLE}/{expert_record_id}?fields[]=github_id")
+                      expert_github = exp.get("fields", {}).get("github_id", "") or ""
                   except Exception as e:
-                      print(f"  WARN: Could not fetch expert github_id: {e}")
+                      print(f"  WARN: Could not fetch github_id: {e}")
 
-              print(f"Dispatching: fork={fork_repo} expert={expert_github} record={record_id}")
+              print(f"Setting up: fork=mercor-code-envs/{fork_repo} expert={expert_github}")
 
-              payload = json.dumps({
-                  "ref": "main",
-                  "inputs": {
-                      "fork_repo": fork_repo,
-                      "expert_github": expert_github,
-                      "airtable_record_id": record_id,
-                  }
-              }).encode()
+              # 1. Fork skills-template (idempotent)
+              rc, out, err = gh(["api", "repos/mercor-code-envs/" + fork_repo, "--silent"])
+              if rc == 0:
+                  print(f"  Fork already exists")
+              else:
+                  print(f"  Forking skills-template -> {fork_repo}...")
+                  rc, out, err = gh(["api", "repos/mercor-code-envs/skills-template/forks",
+                                      "--method", "POST",
+                                      "--field", "organization=mercor-code-envs",
+                                      "--field", f"name={fork_repo}"])
+                  if rc != 0:
+                      print(f"  ERROR forking: {err.strip()}")
+                      continue
+                  print(f"  Fork created, waiting...")
+                  time.sleep(10)
 
-              req = urllib.request.Request(
-                  "https://api.github.com/repos/mercor-code-envs/skills-template/actions/workflows/setup-task.yml/dispatches",
-                  data=payload,
-                  headers={
-                      "Authorization": f"Bearer {GH_TOKEN}",
-                      "Accept": "application/vnd.github+json",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                      "Content-Type": "application/json",
-                  },
-                  method="POST"
-              )
+              # 2. Add expert as collaborator
+              if expert_github:
+                  rc, out, err = gh(["api", f"repos/mercor-code-envs/{fork_repo}/collaborators/{expert_github}",
+                                      "--method", "PUT", "--field", "permission=write"])
+                  if rc == 0:
+                      print(f"  Added {expert_github} as collaborator")
+                  else:
+                      print(f"  WARN: Could not add collaborator: {err.strip()[:100]}")
+
+              # 3. Update Airtable to In Progress
               try:
-                  with urllib.request.urlopen(req) as resp:
-                      print(f"  -> Dispatched (HTTP {resp.status})")
+                  from datetime import datetime, timezone
+                  now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                  at_patch(TABLE, record_id, {"task_status": "In Progress", "time_in_progress": now})
+                  print(f"  Airtable -> In Progress")
               except Exception as e:
-                  print(f"  -> ERROR: {e}")
+                  print(f"  WARN: Airtable update failed: {e}")
+
+          print("Done.")
           EOF
