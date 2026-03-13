@@ -49,10 +49,9 @@ jobs:
 
       - name: Create expert fork repo from template (if not exists)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
-          # Check if repo already exists
           if gh api repos/mercor-code-envs/$FORK_REPO 2>/dev/null | grep -q '"id"'; then
             echo "Repo mercor-code-envs/$FORK_REPO already exists"
           else
@@ -70,21 +69,18 @@ jobs:
 
       - name: Create task branch with task files
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
           TASK_SLUG="${{ steps.inputs.outputs.task_slug }}"
           BRANCH="${{ steps.inputs.outputs.branch_name }}"
           S3_URL="${{ steps.inputs.outputs.s3_url }}"
 
-          # Clone the expert fork repo
           git clone https://x-access-token:$GH_TOKEN@github.com/mercor-code-envs/$FORK_REPO.git task-repo
           cd task-repo
 
-          # Create and switch to the task branch
           git checkout -b $BRANCH
 
-          # Download and extract the task zip into tasks/{task-slug}/
           python3 -c "
           import urllib.request, io, zipfile, sys
           from pathlib import Path
@@ -109,7 +105,6 @@ jobs:
           print(f'Extracted to tasks/{slug}/')
           " "$S3_URL" "$TASK_SLUG"
 
-          # Commit and push
           git config user.email "ops@mercor.com"
           git config user.name "Mercor Ops"
           git add tasks/
@@ -119,7 +114,7 @@ jobs:
 
       - name: Add expert as collaborator on fork repo
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           FORK_REPO="${{ steps.inputs.outputs.fork_repo }}"
           EXPERT="${{ steps.inputs.outputs.expert_github }}"
