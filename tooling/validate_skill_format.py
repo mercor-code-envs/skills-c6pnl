@@ -36,22 +36,42 @@ def find_skills_dir(given):
 
 
 def parse_frontmatter(content):
+    """Parse YAML frontmatter including multiline block scalars (> and |)."""
     if not content.startswith("---"):
         return None, "SKILL.md must start with YAML frontmatter (---)"
     parts = content.split("---", 2)
     if len(parts) < 3:
         return None, "Frontmatter not closed with ---"
     data = {}
-    for line in parts[1].splitlines():
-        line = line.strip()
-        if not line:
+    lines = parts[1].splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped:
+            i += 1
             continue
-        if ":" in line:
-            k, v = line.split(":", 1)
-            key = k.strip()
-            val = v.strip().strip("'\"").strip()
-            if key and key not in data:
-                data[key] = val
+        if ":" not in stripped:
+            i += 1
+            continue
+        k, v = stripped.split(":", 1)
+        key = k.strip()
+        val = v.strip().strip("'\"").strip()
+        if val in (">", "|", ">-", "|-", ">+", "|+") and key:
+            fold = val.startswith(">")
+            block_lines = []
+            i += 1
+            while i < len(lines):
+                bl = lines[i]
+                if bl and not bl[0].isspace():
+                    break
+                block_lines.append(bl.strip())
+                i += 1
+            val = (" " if fold else "\n").join(ln for ln in block_lines if ln)
+        else:
+            i += 1
+        if key and key not in data:
+            data[key] = val
     return data, None
 
 
