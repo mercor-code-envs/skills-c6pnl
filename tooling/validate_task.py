@@ -21,19 +21,29 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 errors: list[str] = []
+warnings: list[str] = []
 
 
 def error(msg: str) -> None:
     errors.append(msg)
 
 
+def warn(msg: str) -> None:
+    warnings.append(msg)
+
+
 def print_results(task_name: str) -> None:
-    if not errors:
+    if not errors and not warnings:
         print(f"All checks passed for task: {task_name}")
         return
-    print("Errors:")
-    for e in errors:
-        print(f"  - {e}")
+    if errors:
+        print("Errors:")
+        for e in errors:
+            print(f"  - {e}")
+    if warnings:
+        print("Warnings:")
+        for w in warnings:
+            print(f"  - {w}")
 
 
 # ---------------------------------------------------------------------------
@@ -51,18 +61,43 @@ def load_json(path: Path) -> dict | None:
 
 
 def parse_frontmatter(skill_md: Path) -> dict:
-    """Extract YAML frontmatter key-value pairs from a SKILL.md file."""
+    """Extract YAML frontmatter key-value pairs from a SKILL.md file.
+    Handles both single-line (key: value) and block scalar (key: >) formats.
+    """
     text = skill_md.read_text()
     if not text.startswith("---"):
         return {}
-    end = text.find("\n---", 3)
-    if end == -1:
+    parts = text.split("---", 2)
+    if len(parts) < 3:
         return {}
     fields: dict = {}
-    for line in text[3:end].strip().splitlines():
-        if ":" in line:
-            k, _, v = line.partition(":")
-            fields[k.strip()] = v.strip().strip('"').strip("'")
+    lines = parts[1].splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or ":" not in stripped:
+            i += 1
+            continue
+        k, _, v = stripped.partition(":")
+        key = k.strip()
+        val = v.strip().strip('"').strip("'").strip()
+        if val in (">", "|", ">-", "|-", ">+", "|+") and key:
+            # Block scalar — collect following indented lines
+            fold = val.startswith(">")
+            block_lines = []
+            i += 1
+            while i < len(lines):
+                bl = lines[i]
+                if bl and not bl[0].isspace():
+                    break
+                block_lines.append(bl.strip())
+                i += 1
+            val = (" " if fold else "\n").join(ln for ln in block_lines if ln)
+        else:
+            i += 1
+        if key and key not in fields:
+            fields[key] = val
     return fields
 
 
@@ -94,8 +129,7 @@ def check_metadata(task_dir: Path, task_name: str) -> dict | None:
     if meta is None:
         return None
 
-    for field in ["task_name", "category", "input_files", "test_file", "solution_file",
-                  "golden_skills", "distractor_skills"]:
+    for field in ["task_name", "category", "input_files", "golden_skills", "distractor_skills"]:
         if field not in meta:
             error(f"metadata.json missing required field: '{field}'")
 
@@ -104,12 +138,6 @@ def check_metadata(task_dir: Path, task_name: str) -> dict | None:
             f"metadata.json task_name '{meta['task_name']}' "
             f"does not match directory name '{task_name}'"
         )
-
-    if meta.get("test_file") and meta["test_file"] != "tests/test.py":
-        error(f"metadata.json test_file must be 'tests/test.py', got: '{meta['test_file']}'")
-
-    if meta.get("solution_file") and meta["solution_file"] != "solution/solve.sh":
-        error(f"metadata.json solution_file must be 'solution/solve.sh', got: '{meta['solution_file']}'")
 
     golden = meta.get("golden_skills", [])
     if not isinstance(golden, list) or len(golden) == 0:
@@ -121,19 +149,33 @@ def check_metadata(task_dir: Path, task_name: str) -> dict | None:
     if not isinstance(distractors, list):
         error("metadata.json distractor_skills must be an array")
     elif len(distractors) < 3:
-        error(f"metadata.json distractor_skills has {len(distractors)} items; minimum is 3")
+        # Only error if golden_skills are also filled — TODOs are expected initially
+        if golden and any(s for s in golden):
+            error(f"metadata.json distractor_skills has {len(distractors)} items; minimum is 3")
+        else:
+            warn(f"metadata.json distractor_skills is empty (fill in after writing skills)")
     elif len(distractors) > 5:
         error(f"metadata.json distractor_skills has {len(distractors)} items; maximum is 5")
 
     if not isinstance(meta.get("input_files", []), list):
         error("metadata.json input_files must be an array")
 
+    # Check failure_modes is present and filled (warn if TODO strings remain)
+    failure_modes = meta.get("failure_modes", {})
+    if not failure_modes:
+        warn("metadata.json failure_modes is missing or empty")
+    else:
+        for key, val in failure_modes.items():
+            val_str = json.dumps(val) if isinstance(val, dict) else str(val)
+            if "TODO" in val_str:
+                warn(f"metadata.json failure_modes['{key}'] still has TODO — fill in after running evals")
+
     return meta
 
 
 def check_required_files(task_dir: Path, meta: dict | None) -> None:
     """Check required top-level files and directories exist."""
-    for fname in ["instruction.md", "setup.sh"]:
+    for fname in ["instruction.md", "setup.sh", "Dockerfile"]:
         if not (task_dir / fname).exists():
             error(f"{fname} is missing")
 
@@ -146,13 +188,11 @@ def check_required_files(task_dir: Path, meta: dict | None) -> None:
     input_folder = meta.get("input_files_folder", "input_files") if meta else "input_files"
     input_dir = task_dir / input_folder
     if not input_dir.exists():
-        error(f"input files folder '{input_folder}' is missing")
-    elif not (input_dir / ".gitkeep").exists():
-        error(f"{input_folder}/.gitkeep is missing")
+        error(f"input files folder '{input_folder}/' is missing")
 
 
 def check_input_files_exist(task_dir: Path, meta: dict) -> None:
-    """Every file listed in metadata.json input_files must exist."""
+    """Every file listed in metadata.json input_files must exist in input_files/."""
     input_folder = meta.get("input_files_folder", "input_files")
     input_dir = task_dir / input_folder
     for fname in meta.get("input_files", []):
@@ -174,16 +214,18 @@ def check_skills(task_dir: Path, meta: dict | None) -> None:
             list(meta.get("distractor_skills", []))
         )
 
+    # All declared skills must exist
     for skill_name in all_declared:
         if not (skills_dir / skill_name).exists():
-            error(f"skills/{skill_name}/ directory is missing (declared in metadata.json)")
+            error(f"skills/{skill_name}/ is missing (declared in metadata.json)")
 
-    actual_skill_dirs = [d.name for d in skills_dir.iterdir() if d.is_dir()]
+    # All existing skill dirs must be declared
+    actual_skill_dirs = [d.name for d in skills_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
     for skill_name in actual_skill_dirs:
         if all_declared and skill_name not in all_declared:
             error(
                 f"skills/{skill_name}/ exists but is not listed in "
-                "golden_skills or distractor_skills"
+                "golden_skills or distractor_skills in metadata.json"
             )
 
     for skill_name in actual_skill_dirs:
@@ -199,7 +241,6 @@ def _check_single_skill(skill_dir: Path, skill_name: str) -> None:
     else:
         _check_skill_md(skill_md, skill_name, prefix)
 
-    # scripts/ is required per the skill spec
     if not (skill_dir / "scripts").exists():
         error(f"{prefix}/scripts/ directory is missing")
 
@@ -207,10 +248,8 @@ def _check_single_skill(skill_dir: Path, skill_name: str) -> None:
 def _check_skill_md(skill_md: Path, skill_name: str, prefix: str) -> None:
     """
     Validate SKILL.md frontmatter per skill spec:
-    - name: required, 1-64 chars, lowercase alphanumeric + hyphens,
-            no leading/trailing/consecutive hyphens, must match directory name
+    - name: required, 1-64 chars, lowercase alphanumeric + hyphens, matches directory name
     - description: required, 1-1024 chars
-    All other fields (license, compatibility, metadata, allowed-tools) are optional.
     """
     text = skill_md.read_text()
     fields = parse_frontmatter(skill_md)
@@ -219,38 +258,34 @@ def _check_skill_md(skill_md: Path, skill_name: str, prefix: str) -> None:
         error(f"{prefix}/SKILL.md has no valid YAML frontmatter (must start with ---)")
         return
 
-    # --- name field ---
+    # name field
     name = fields.get("name", "")
     if not name:
-        error(f"{prefix}/SKILL.md frontmatter missing required field: 'name'")
+        error(f"{prefix}/SKILL.md missing required frontmatter field: 'name'")
     else:
         if len(name) > 64:
             error(f"{prefix}/SKILL.md name is {len(name)} chars; maximum is 64")
         if not is_valid_skill_name(name):
             error(
                 f"{prefix}/SKILL.md name '{name}' is invalid — "
-                "must be lowercase letters, numbers, and hyphens only; "
+                "must be lowercase letters, numbers, hyphens only; "
                 "no leading/trailing/consecutive hyphens"
             )
         elif name != skill_name:
-            error(
-                f"{prefix}/SKILL.md name '{name}' does not match "
-                f"directory name '{skill_name}'"
-            )
+            error(f"{prefix}/SKILL.md name '{name}' does not match directory name '{skill_name}'")
 
-    # --- description field ---
+    # description field
     desc = fields.get("description", "")
     if not desc:
-        error(f"{prefix}/SKILL.md frontmatter missing required field: 'description'")
+        error(f"{prefix}/SKILL.md missing required frontmatter field: 'description'")
     elif len(desc) > 1024:
         error(f"{prefix}/SKILL.md description is {len(desc)} chars; maximum is 1024")
 
-    # --- size limits ---
+    # size limits
     lines = text.splitlines()
     if len(lines) > 500:
         error(f"{prefix}/SKILL.md is {len(lines)} lines; maximum is 500")
 
-    # Count frontmatter words
     fm_end = text.find("\n---", 3)
     if fm_end != -1:
         fm_words = len(text[3:fm_end].split())
