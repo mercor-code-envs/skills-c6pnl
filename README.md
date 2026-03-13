@@ -6,38 +6,40 @@ Each task is a software engineering problem that frontier AI models **fail witho
 
 ## Getting Started
 
-All tasks are assigned through Airtable. When you claim a task, a GitHub repository and branch are automatically set up for you.
+All tasks are assigned through Airtable. When you claim a task, a GitHub repository is automatically forked for you within ~5 minutes.
 
 ### Step 1 — Claim your task in Airtable
 
-Open your task list in the Airtable interface and claim a task. Within ~5 minutes:
-- A GitHub repo (`mercor-code-envs/skills-<your-id>`) is created for you
-- A branch (`skills-<task-id>`) is created with the task files already committed
-- You are added as a collaborator on the repo
-- Your task status updates to **In Progress**
+Open your task list in the Airtable interface and claim a task. The automation will:
+- Fork `mercor-code-envs/skills-template` into `mercor-code-envs/skills-<your-id>`
+- Add you as a collaborator on the fork
+- Update your task status to **In Progress**
 
-### Step 2 — Clone your repo and checkout your task branch
+### Step 2 — Clone, create branch, and download task files
 
-Use the **Code - Clone Repo** command shown in Airtable:
+Copy and run the three **Code** commands shown in your Airtable task record in order:
 
+**Code - Clone Repo:**
 ```bash
 gh repo clone mercor-code-envs/skills-<your-id>
 cd skills-<your-id>
 ```
 
-Then checkout your task branch (it already exists — the task files are there):
-
+**Code - Create Branch** (creates your task branch locally):
 ```bash
-git fetch origin
-git checkout skills-<task-id>
+git checkout -b skills-<task-id>
 ```
 
-> ⚠️ Do NOT use `git checkout -b` — your branch already exists with task files committed.
-> Use `git checkout skills-<task-id>` (no `-b` flag) to check out the existing branch.
+**Code - Download S3** (downloads your task into `tasks/<task-slug>/`):
+```bash
+python3 tooling/download_s3.py \
+  --s3-url "<url from airtable>" \
+  --task-name "<task name from airtable>"
+```
 
-Your task is in `tasks/<task-slug>/`.
+Your task is now at `tasks/<task-slug>/`.
 
-### Step 3 — Download Harbor (for local evaluation)
+### Step 3 — Install Harbor (for local evaluation)
 
 ```bash
 pip install harbor-bench
@@ -61,9 +63,9 @@ tasks/<task-slug>/
 ├── instruction.md          # Problem statement (what the AI sees)
 ├── metadata.json           # Fill in golden_skills, distractor_skills, failure_modes
 ├── tests/
-│   └── test.py             # Verifier (do not modify)
+│   └── test.py             # Verifier — do not modify
 └── solution/
-    └── solve.sh            # Reference solution (do not modify)
+    └── solve.sh            # Reference solution — do not modify
 ```
 
 You need to add **1 golden skill + 3–5 distractor skills** under `tasks/<task-slug>/skills/`.
@@ -75,7 +77,6 @@ You need to add **1 golden skill + 3–5 distractor skills** under `tasks/<task-
 Confirm both agents fail before you write anything:
 
 ```bash
-# Run without skills to see how agents fail
 harbor run -p tasks/<task-slug> -e modal -a terminus-2 \
     -m "gemini/gemini-3.1-pro-preview"
 
@@ -91,10 +92,10 @@ Both should score < 1.0. Note what each agent gets wrong — this tells you what
 
 Create `tasks/<task-slug>/skills/<skill-name>/SKILL.md`. The golden skill must:
 
-- Target the **specific failure mode** you observed (what did the agent miss?)
+- Target the **specific failure mode** you observed
 - Be **general and reusable** — not a one-off hint for this exact task
 - Not contain the solution or a step-by-step recipe
-- Pass the format check:
+- Pass format validation:
 
 ```bash
 python3 tooling/validate_skill_format.py tasks/<task-slug>/skills/<skill-name>/SKILL.md
@@ -126,22 +127,19 @@ version: "1.0"
 
 ## Step 6 — Verify the Golden Skill Works
 
-Run `claude-code` with the skill in place:
-
 ```bash
 harbor run -p tasks/<task-slug> -e modal -a claude-code -m claude-opus-4-6
 ```
 
-Expected: score = **1.0**. If not, revise the skill and re-run. Check the trajectory to confirm the agent actually **read** the skill file.
+Expected: score = **1.0**. Revise and re-run if not. Confirm the agent actually read the skill file in the trajectory.
 
 ---
 
 ## Step 7 — Write Distractor Skills
 
-Add 3–5 distractor skills: thematically related but describe different (wrong or irrelevant) approaches.
+Add 3–5 distractor skills: thematically related but describe different (wrong or irrelevant) approaches. Each must score ≥ 0.6 cosine similarity with the golden skill:
 
 ```bash
-# Check cosine similarity — each distractor must score ≥ 0.6 vs the golden skill
 python3 tooling/validate_skill_similarity.py \
     tasks/<task-slug>/skills/<golden-skill>/SKILL.md \
     tasks/<task-slug>/skills/<distractor-name>/SKILL.md
@@ -150,8 +148,6 @@ python3 tooling/validate_skill_similarity.py \
 ---
 
 ## Step 8 — End-to-End Validation
-
-With the full skill set in place, run both agents:
 
 ```bash
 harbor run -p tasks/<task-slug> -e modal -a terminus-2 \
@@ -188,7 +184,7 @@ Both should score **1.0**.
 }
 ```
 
-Then run the full task validator:
+Run the full task validator:
 
 ```bash
 python3 tooling/validate_task.py tasks/<task-slug>
@@ -196,9 +192,15 @@ python3 tooling/validate_task.py tasks/<task-slug>
 
 ---
 
-## Step 10 — Submit Your PR
+## Step 10 — Commit, Push, and Open a PR
 
-Use the **Code - Create PR** command shown in Airtable:
+```bash
+git add tasks/<task-slug>/
+git commit -m "Add skills: <task-slug>"
+git push -u origin skills-<task-id>
+```
+
+Then use the **Code - Create PR** command from Airtable:
 
 ```bash
 gh pr create --repo mercor-code-envs/skills-<your-id> \
@@ -215,15 +217,13 @@ CI runs `validate_task.py` automatically on your PR. Fix any failures before mar
 
 ## Deliverable Checklist
 
-Before submitting:
-
 - [ ] `tasks/<task-slug>/skills/<golden-skill>/SKILL.md` — passes format check
-- [ ] `tasks/<task-slug>/skills/<distractor-N>/SKILL.md` — 3–5 distractors, each ≥ 0.6 cosine similarity
+- [ ] `tasks/<task-slug>/skills/<distractor-N>/SKILL.md` — 3–5 distractors, each ≥ 0.6 similarity
 - [ ] `metadata.json` — all three `failure_modes` entries filled in
-- [ ] `claude-code` scores 1.0 with skills (Step 6)
-- [ ] Both agents score 1.0 with full skill set (Step 8)
+- [ ] `claude-code` scores 1.0 with skills
+- [ ] Both agents score 1.0 with full skill set
 - [ ] `python3 tooling/validate_task.py tasks/<task-slug>` passes
-- [ ] PR created with title `Task ID: [<airtable-task-id>]`
+- [ ] PR opened with title `Task ID: [<airtable-task-id>]`
 
 ---
 
