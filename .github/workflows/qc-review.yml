@@ -35,7 +35,7 @@ jobs:
             AWS_ACCESS_KEY_ID: ${{ secrets.S3_AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_AWS_SECRET_ACCESS_KEY }}
             AWS_DEFAULT_REGION: ${{ secrets.S3_AWS_REGION }}
-            QC_API_KEY: ${{ secrets.QC_API_KEY }}
+            QC_API_KEY: ${{ secrets.APEX_API_KEY }}
             S3_BUCKET_TEMP: ${{ secrets.S3_BUCKET_TEMP }}
 
         steps:
