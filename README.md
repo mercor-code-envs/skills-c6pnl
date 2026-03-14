@@ -68,7 +68,7 @@ tasks/<task-slug>/
     └── solve.sh            # Reference solution — do not modify
 ```
 
-You need to add **2+ golden skills + 3–5 distractor skills** under `tasks/<task-slug>/skills/`.
+You need to add **2 golden skills + 3–5 distractor skills** under `tasks/<task-slug>/skills/`.
 
 ---
 
