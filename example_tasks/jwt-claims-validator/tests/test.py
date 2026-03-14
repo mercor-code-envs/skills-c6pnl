@@ -386,5 +386,11 @@ class TestValidationOrder:
 
 if __name__ == "__main__":
     exit_code = pytest.main([__file__, "-rA"])
-    print("pass" if exit_code == 0 else "fail")
+    passed = exit_code == 0
+    print("pass" if passed else "fail")
+    # Write reward file for Harbor verifier
+    from pathlib import Path
+    reward_path = Path("/logs/verifier/reward.txt")
+    reward_path.parent.mkdir(parents=True, exist_ok=True)
+    reward_path.write_text("1.0" if passed else "0.0")
     sys.exit(exit_code)

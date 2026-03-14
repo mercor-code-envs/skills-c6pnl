@@ -141,51 +141,107 @@ Open your task list in the Airtable interface and claim a task. The automation w
 - Add you as a collaborator on the fork
 - Update your task status to **In Progress**
 
-### Step 2 -- Clone, create branch, and download task files
+### Step 2 -- Clone and check out your task branch
 
-Copy and run the three **Code** commands shown in your Airtable task record in order:
+Task files are pre-committed to your branch. Copy and run the two **Code** commands shown in your Airtable task record:
 
 ```bash
 # Clone Repo
 gh repo clone mercor-code-envs/skills-<your-id>
 cd skills-<your-id>
 
-# Create Branch
-git checkout -b skills-<task-id>
-
-# Download S3 (downloads your task into tasks/<task-slug>/)
-python3 tooling/download_s3.py \
-  --s3-url "<url from airtable>" \
-  --task-name "<task name from airtable>"
+# Checkout Branch (task files already committed here)
+git checkout skills-<task-record-id>
 ```
 
 Your task is now at `tasks/<task-slug>/`.
 
-### Step 3 -- Install Harbor (for local evaluation)
+> **S3 fallback:** If your branch is empty (no `tasks/` files), use the S3 download command instead:
+> ```bash
+> python3 tooling/download_s3.py \
+>   --s3-url "<presigned url from airtable>" \
+>   --task-name "<task name from airtable>"
+> ```
 
+### Step 3 -- Install prerequisites
+
+**Harbor** (local evaluation harness):
 ```bash
 pip install harbor
 # or
 uv tool install harbor
 ```
 
+**API keys** — export before running agent evaluations:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...   # for claude-code agent
+export GEMINI_API_KEY=AIza...         # for terminus-2 agent
+```
+
+**Docker Desktop** must be running for all `docker` and `harbor` commands.
+
 ---
 
 ## 5. Step-by-Step Workflow
 
-### Step 4 -- Run the task without skills (baseline)
+### Step 4 -- Build the Docker image and confirm the baseline fails
 
-Confirm both agents fail before you write anything:
-
+**Build the image** (runs `docker build` internally):
 ```bash
-harbor run -p tasks/<task-slug> -e modal -a terminus-2 \
-    -m "gemini/gemini-3.1-pro-preview"
-
-harbor run -p tasks/<task-slug> -e modal -a claude-code \
-    -m claude-opus-4-6
+python3 tooling/build.py --task-slug <task-slug>
 ```
 
-Both should score < 1.0. Note what each agent gets wrong -- this tells you what the skill needs to teach.
+**Confirm the test fails without a solution** (pure Docker, no Harbor needed):
+```bash
+docker run --rm --platform linux/amd64 \
+  -v "$(pwd)/tasks/<task-slug>/tests:/app/tests" \
+  <task-slug> python3 /app/tests/test.py
+```
+Expected output: `fail` (the scaffold is intentionally broken).
+
+**Confirm the oracle solution passes** (verifies the test harness is correct):
+```bash
+docker run --rm --platform linux/amd64 \
+  -v "$(pwd)/tasks/<task-slug>/tests:/app/tests" \
+  -v "$(pwd)/tasks/<task-slug>/solution:/solution" \
+  <task-slug> bash -c 'bash /solution/solve.sh && python3 /app/tests/test.py'
+```
+Expected output: `pass` (30/30 tests).
+
+**Run both AI agents without skills** to confirm they fail and observe what goes wrong:
+
+First, add a `task.toml` to the task directory if it doesn't exist:
+```toml
+# tasks/<task-slug>/task.toml
+version = "1.0"
+
+[metadata]
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+build_timeout_sec = 300.0
+docker_image = "<task-slug>"
+cpus = 1
+memory_mb = 4096
+storage_mb = 10240
+```
+
+Then run (image already built above, `docker_image` in task.toml tells Harbor to use it):
+```bash
+# terminus-2 — gemini-3.1-pro-preview
+harbor run -p tasks/<task-slug> -e docker --no-force-build \
+    -a terminus-2 -m "gemini/gemini-3.1-pro-preview" -o jobs/
+
+# claude-code — claude-opus-4-6
+harbor run -p tasks/<task-slug> -e docker --no-force-build \
+    -a claude-code -m claude-opus-4-6 -o jobs/
+```
+Both should score **0.0**. Note what each agent gets wrong — this tells you what the skill needs to teach.
 
 ### Step 5 -- Write the golden skills
 
@@ -244,11 +300,22 @@ Allowed items inside each skill directory: `SKILL.md` (required), `scripts/` (re
 
 ### Step 6 -- Verify the golden skills work
 
+Rebuild the image so the new skills are baked in, then run both agents:
+
 ```bash
-harbor run -p tasks/<task-slug> -e modal -a claude-code -m claude-opus-4-6
+# Rebuild image with your new skills included
+python3 tooling/build.py --task-slug <task-slug>
+
+# Run terminus-2
+harbor run -p tasks/<task-slug> -e docker --no-force-build \
+    -a terminus-2 -m "gemini/gemini-3.1-pro-preview" -o jobs/
+
+# Run claude-code
+harbor run -p tasks/<task-slug> -e docker --no-force-build \
+    -a claude-code -m claude-opus-4-6 -o jobs/
 ```
 
-Expected: score = **1.0**. Revise and re-run if not. Confirm the agent actually read the skill file in the trajectory.
+Expected: score = **1.0** for both. If not, check `jobs/<timestamp>/<task>/agent/trajectory.json` to see what the agent did and which skill files it read. Revise and re-run.
 
 ### Step 7 -- Write distractor skills
 
@@ -272,15 +339,22 @@ The QC rubric targets >= 0.6; the automated validator passes at >= 0.4.
 
 ### Step 8 -- End-to-end validation
 
-```bash
-harbor run -p tasks/<task-slug> -e modal -a terminus-2 \
-    -m "gemini/gemini-3.1-pro-preview"
+Rebuild the image (picks up any skill edits since Step 6), then run both agents:
 
-harbor run -p tasks/<task-slug> -e modal -a claude-code \
-    -m claude-opus-4-6
+```bash
+# Rebuild with full skill set (golden + distractors)
+python3 tooling/build.py --task-slug <task-slug>
+
+# Run terminus-2
+harbor run -p tasks/<task-slug> -e docker --no-force-build \
+    -a terminus-2 -m "gemini/gemini-3.1-pro-preview" -o jobs/
+
+# Run claude-code
+harbor run -p tasks/<task-slug> -e docker --no-force-build \
+    -a claude-code -m claude-opus-4-6 -o jobs/
 ```
 
-Both should score **1.0**.
+Both should score **1.0**. Job results and trajectories are written to `jobs/<timestamp>/`.
 
 ### Step 9 -- Fill in `metadata.json`
 
@@ -341,15 +415,18 @@ CI runs `validate_task.py` automatically on your PR. Fix any failures before mar
 - Typical structure (varies per task):
 
 ```dockerfile
-FROM task-base:latest
+FROM gdm-base:latest
 WORKDIR /app
+# Skills copied to both paths — terminus-2 reads /app/skills/, claude-code reads ~/.claude/skills
+COPY skills /app/skills
 COPY skills /root/.claude/skills
 COPY input_files/ /app/
 COPY setup.sh /tmp/
 RUN chmod +x /tmp/setup.sh && /tmp/setup.sh
 ```
 
-- The skills `COPY` destination is **task/Dockerfile-dependent**. Each agent expects skills at a specific path: claude-code reads from `~/.claude/skills`, terminus-2 reads from `/app/skills/`. Check your task's Dockerfile to see which path(s) it copies skills to -- some Dockerfiles include both, others only one.
+- Skills must be copied to **both** `/app/skills/` (terminus-2) and `/root/.claude/skills/` (claude-code). Harbor's claude-code init copies `~/.claude/skills` → `$CLAUDE_CONFIG_DIR/skills` at agent startup.
+- The task's `instruction.md` must include a nudge such as: *"You have access to skill files in `/app/skills/`."* so the agent knows to look for them.
 - `setup.sh` runs during image build, not at runtime.
 - Treat as pre-provided; do not modify.
 
@@ -417,14 +494,28 @@ If the instruction already gives away what your golden skill teaches, either **(
 
 ## 8. Harbor Evaluation Environment
 
-All task evaluation runs through **Harbor**, an execution harness that builds the task's Docker container and runs an AI agent inside it on Modal.
+All task evaluation runs through **Harbor**, an execution harness that builds the task's Docker container and runs an AI agent inside it locally using Docker.
 
 | Agent | Model flag | Skills path in container |
 |-------|-----------|--------------------------|
 | terminus-2 | `gemini/gemini-3.1-pro-preview` | `/app/skills/` |
-| claude-code | `claude-opus-4-6` | `~/.claude/skills` |
+| claude-code | `claude-opus-4-6` | `~/.claude/skills` (Harbor copies from there to `$CLAUDE_CONFIG_DIR/skills`) |
 
-Pass threshold: score = **1.0**. Environment: Modal (`-e modal`).
+Pass threshold: score = **1.0**. Environment: Docker (`-e docker`).
+
+**How Harbor finds your image:** Harbor uses the `docker_image` field in `task.toml` to run a pre-built local image instead of rebuilding from scratch. Always run `python3 tooling/build.py --task-slug <task-slug>` before a `harbor run` so the image reflects your latest skill changes.
+
+**Viewing trajectories:**
+```bash
+# See what the agent did step-by-step
+harbor view jobs/<timestamp>/
+```
+
+**Required API keys:**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...   # claude-code
+export GEMINI_API_KEY=AIza...         # terminus-2
+```
 
 ---
 
@@ -521,7 +612,7 @@ The validator accepts either format but warns on `TODO` values. Record detailed 
 
 | Item | Value |
 |------|-------|
-| Environment | Modal (`-e modal`) |
+| Environment | Docker local (`-e docker --no-force-build`) |
 | claude-code model | `claude-opus-4-6` |
 | terminus-2 model | `gemini/gemini-3.1-pro-preview` (with `gemini/` prefix) |
 | Pass threshold | score = 1.0 |
@@ -529,3 +620,7 @@ The validator accepts either format but warns on `TODO` values. Record detailed 
 | Golden skills | 2 per task |
 | Distractor skills | 3-5 per task |
 | Similarity threshold | >= 0.4 automated pass, >= 0.6 QC target |
+| Build image | `python3 tooling/build.py --task-slug <slug>` |
+| Run agent | `harbor run -p tasks/<slug> -e docker --no-force-build -a <agent> -m <model> -o jobs/` |
+| API key (claude-code) | `ANTHROPIC_API_KEY` |
+| API key (terminus-2) | `GEMINI_API_KEY` |
