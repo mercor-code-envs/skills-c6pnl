@@ -75,20 +75,19 @@ def main():
         sys.exit(1)
 
     task_slug = task_dir.name
-    env_dir = task_dir / "environment"
-    dockerfile = env_dir / "Dockerfile"
+    dockerfile = task_dir / "Dockerfile"
 
     if not dockerfile.exists():
-        print(f"No Dockerfile found in {env_dir}")
+        print(f"No Dockerfile found in {task_dir}")
         print("This task may not use a Docker environment.")
         sys.exit(0)
 
     print(f"Building Docker image: {task_slug}")
-    print(f"  From: {env_dir.relative_to(Path.cwd())}")
+    print(f"  From: {task_dir.relative_to(Path.cwd())}")
     print()
 
     result = subprocess.run(
-        ["docker", "build", "--platform", "linux/amd64", "-t", task_slug, str(env_dir)],
+        ["docker", "build", "--platform", "linux/amd64", "-t", task_slug, str(task_dir)],
         check=False,
     )
 
