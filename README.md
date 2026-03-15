@@ -180,6 +180,12 @@ export GEMINI_API_KEY=AIza...         # for terminus-2 agent
 
 **Docker Desktop** must be running for all `docker` and `harbor` commands.
 
+**Base image** — build once per machine before running any tasks:
+```bash
+docker build -f Dockerfile.base -t gdm-base:latest .
+```
+This creates the `gdm-base:latest` image that all task Dockerfiles inherit from. Only needed once.
+
 ---
 
 ## 5. Step-by-Step Workflow
